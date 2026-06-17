@@ -399,3 +399,9 @@ FodyWeavers.xsd
 
 # JetBrains Rider
 *.sln.iml
+
+# Node (TransplantChain demo)
+node_modules/
+.env
+.DS_Store
+npm-debug.log
