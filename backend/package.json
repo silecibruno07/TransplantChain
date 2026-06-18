@@ -4,9 +4,12 @@
     "description": "Backend de demo (boceto) para TransplantChain - hackathon",
     "main": "server.js",
     "scripts": {
-          "start": "node server.js"
+        "start": "node server.js",
+        "dev": "nodemon server.js"
     },
     "dependencies": {
-          "express": "^4.19.2"
+        "express": "^4.19.2",
+        "mysql2": "^3.22.5",
+        "nodemon": "^3.1.0"
     }
 }
