@@ -1,9 +1,22 @@
 // data.js
-// Datos en memoria + lógica de "IA" simplificada (compatibilidad y priorización).
-// Esto es un boceto para la demo del hackatón: en la versión real, esta capa
-// se conectaría a PostgreSQL (datos clínicos) y a un modelo entrenado (Scikit-Learn/TensorFlow).
+// Lógica de "IA" simplificada (compatibilidad y priorización).
+// Conectado a MySQL para persistencia de datos (antes era un boceto en memoria).
+// En la versión real, esta capa podría seguir en MySQL o migrar a PostgreSQL
+// y a un modelo entrenado (Scikit-Learn/TensorFlow) para el matching.
 
 const crypto = require("crypto");
+const mysql = require("mysql2/promise");
+
+// --- Configuración de la Conexión a la Base de Datos ---
+const dbConfig = {
+  host: "localhost",
+  user: "root", // Usuario por defecto en XAMPP
+  password: "", // Contraseña por defecto en XAMPP es vacía
+  database: "transplantchain",
+};
+
+// Creamos un "pool" de conexiones para reutilizarlas y mejorar el rendimiento.
+const pool = mysql.createPool(dbConfig);
 
 // ----------------------------------------------------------------------
 // Compatibilidad sanguínea simplificada (donante -> receptores compatibles)
@@ -19,56 +32,46 @@ const COMPATIBILIDAD = {
   "AB+": ["AB+"],
 };
 
-// ----------------------------------------------------------------------
-// Datos de ejemplo (semilla) para que la demo se vea viva desde el arranque
-// ----------------------------------------------------------------------
-let donantes = [
-  {
-    id: 1,
-    hospitalOrigen: "Hospital Italiano",
-    organo: "Riñón",
-    grupoSanguineo: "O+",
-    horaExtraccion: new Date().toISOString(),
-    estado: "Disponible", // Disponible | Asignado
-  },
-  {
-    id: 2,
-    hospitalOrigen: "Hospital de Clínicas",
-    organo: "Hígado",
-    grupoSanguineo: "A-",
-    horaExtraccion: new Date().toISOString(),
-    estado: "Disponible",
-  },
-];
+// --- Funciones de acceso a datos (asíncronas, vía MySQL) ---
 
-let receptores = [
-  { id: 1, nombre: "Paciente A. Gómez", organoNecesitado: "Riñón", grupoSanguineo: "O+", urgencia: 9, diasEspera: 210, distanciaKm: 12, hospital: "Hospital Italiano" },
-  { id: 2, nombre: "Paciente B. Fernández", organoNecesitado: "Riñón", grupoSanguineo: "A+", urgencia: 6, diasEspera: 95, distanciaKm: 40, hospital: "Hospital Austral" },
-  { id: 3, nombre: "Paciente C. Rodríguez", organoNecesitado: "Riñón", grupoSanguineo: "O-", urgencia: 8, diasEspera: 300, distanciaKm: 8, hospital: "Hospital Italiano" },
-  { id: 4, nombre: "Paciente D. Silva", organoNecesitado: "Hígado", grupoSanguineo: "O-", urgencia: 10, diasEspera: 150, distanciaKm: 25, hospital: "Hospital de Clínicas" },
-  { id: 5, nombre: "Paciente E. Torres", organoNecesitado: "Hígado", grupoSanguineo: "A-", urgencia: 5, diasEspera: 60, distanciaKm: 5, hospital: "Hospital de Clínicas" },
-  { id: 6, nombre: "Paciente F. Acosta", organoNecesitado: "Corazón", grupoSanguineo: "B+", urgencia: 7, diasEspera: 180, distanciaKm: 60, hospital: "Hospital Austral" },
-];
+async function getDonantes() {
+  const [rows] = await pool.query("SELECT * FROM donantes ORDER BY id DESC");
+  return rows;
+}
 
-let asignaciones = []; // Historial de asignaciones confirmadas (simula lo que ya quedó "en la blockchain")
+async function getDonanteById(id) {
+  const [rows] = await pool.query("SELECT * FROM donantes WHERE id = ?", [id]);
+  return rows[0];
+}
 
-let nextDonorId = donantes.length + 1;
-let nextAsignacionId = 1;
+async function getReceptores() {
+  const [rows] = await pool.query("SELECT * FROM receptores ORDER BY id");
+  return rows;
+}
+
+async function getAsignaciones() {
+  const [rows] = await pool.query("SELECT * FROM asignaciones ORDER BY id DESC");
+  return rows;
+}
 
 // ----------------------------------------------------------------------
 // "Motor de IA" simplificado: filtra por compatibilidad y calcula un score
 // de prioridad. En producción esto se reemplaza por el módulo real de IA
 // (Semana 3 del cronograma del dossier).
 // ----------------------------------------------------------------------
-function calcularMatching(donante) {
+async function calcularMatching(donante) {
   const compatibles = COMPATIBILIDAD[donante.grupoSanguineo] || [];
+  const placeholders = compatibles.map(() => "?").join(","); // -> ?,?,?
+
+  const query = `
+    SELECT * FROM receptores
+    WHERE organoNecesitado = ? AND grupoSanguineo IN (${placeholders})
+  `;
+  const params = [donante.organo, ...compatibles];
+
+  const [receptores] = await pool.query(query, params);
 
   return receptores
-    .filter(
-      (r) =>
-        r.organoNecesitado === donante.organo &&
-        compatibles.includes(r.grupoSanguineo)
-    )
     .map((r) => {
       // Score simple: más urgencia y más tiempo de espera suman, más distancia resta.
       const score =
@@ -79,22 +82,27 @@ function calcularMatching(donante) {
     .map((r, index) => ({ ranking: index + 1, ...r }));
 }
 
-function registrarDonante({ hospitalOrigen, organo, grupoSanguineo }) {
-  const nuevo = {
-    id: nextDonorId++,
-    hospitalOrigen,
-    organo,
-    grupoSanguineo,
-    horaExtraccion: new Date().toISOString(),
-    estado: "Disponible",
-  };
-  donantes.push(nuevo);
-  return nuevo;
+async function registrarDonante({ hospitalOrigen, organo, grupoSanguineo }) {
+  const query = `
+    INSERT INTO donantes (hospitalOrigen, organo, grupoSanguineo, horaExtraccion, estado)
+    VALUES (?, ?, ?, ?, ?)
+  `;
+  const params = [hospitalOrigen, organo, grupoSanguineo, new Date(), "Disponible"];
+  const [result] = await pool.query(query, params);
+
+  const [newDonante] = await pool.query("SELECT * FROM donantes WHERE id = ?", [
+    result.insertId,
+  ]);
+  return newDonante[0];
 }
 
-function confirmarAsignacion({ donanteId, receptorId }) {
-  const donante = donantes.find((d) => d.id === Number(donanteId));
-  const receptor = receptores.find((r) => r.id === Number(receptorId));
+async function confirmarAsignacion({ donanteId, receptorId }) {
+  const [donantes] = await pool.query("SELECT * FROM donantes WHERE id = ?", [donanteId]);
+  const donante = donantes[0];
+
+  const [receptores] = await pool.query("SELECT * FROM receptores WHERE id = ?", [receptorId]);
+  const receptor = receptores[0];
+
   if (!donante || !receptor) {
     throw new Error("Donante o receptor no encontrado");
   }
@@ -102,7 +110,10 @@ function confirmarAsignacion({ donanteId, receptorId }) {
     throw new Error("Este órgano ya fue asignado");
   }
 
-  donante.estado = "Asignado";
+  // Actualizar estado del donante
+  await pool.query("UPDATE donantes SET estado = 'Asignado' WHERE id = ?", [donanteId]);
+
+  const score = receptor.urgencia * 6 + receptor.diasEspera * 0.08 - receptor.distanciaKm * 0.3;
 
   // ------------------------------------------------------------------
   // PUNTO DE INTEGRACIÓN CON BLOCKCHAIN
@@ -113,35 +124,47 @@ function confirmarAsignacion({ donanteId, receptorId }) {
   // ------------------------------------------------------------------
   const hashSimulado = crypto.randomBytes(32).toString("hex");
 
-  const asignacion = {
-    id: nextAsignacionId++,
-    fecha: new Date().toISOString(),
+  const asignacionData = {
+    donanteId,
+    receptorId,
+    fecha: new Date(),
     organo: donante.organo,
     hospitalOrigen: donante.hospitalOrigen,
     receptor: receptor.nombre,
     hospitalDestino: receptor.hospital,
-    score: receptor.urgencia * 6 + receptor.diasEspera * 0.08 - receptor.distanciaKm * 0.3,
+    score: Math.round(score * 10) / 10,
     txHash: hashSimulado,
     estadoBlockchain: "Simulado (pendiente módulo Hyperledger)",
   };
 
-  asignaciones.push(asignacion);
-  return asignacion;
+  const query = "INSERT INTO asignaciones SET ?";
+  const [result] = await pool.query(query, asignacionData);
+
+  const [newAsignacion] = await pool.query("SELECT * FROM asignaciones WHERE id = ?", [
+    result.insertId,
+  ]);
+  return newAsignacion[0];
 }
 
-function getDashboard() {
+async function getDashboard() {
+  const [[{ totalDonantes }]] = await pool.query("SELECT COUNT(*) as totalDonantes FROM donantes");
+  const [[{ organosDisponibles }]] = await pool.query("SELECT COUNT(*) as organosDisponibles FROM donantes WHERE estado = 'Disponible'");
+  const [[{ pacientesEnEspera }]] = await pool.query("SELECT COUNT(*) as pacientesEnEspera FROM receptores");
+  const [[{ trasplantesConfirmados }]] = await pool.query("SELECT COUNT(*) as trasplantesConfirmados FROM asignaciones");
+
   return {
-    totalDonantes: donantes.length,
-    organosDisponibles: donantes.filter((d) => d.estado === "Disponible").length,
-    pacientesEnEspera: receptores.length,
-    trasplantesConfirmados: asignaciones.length,
+    totalDonantes,
+    organosDisponibles,
+    pacientesEnEspera,
+    trasplantesConfirmados,
   };
 }
 
 module.exports = {
-  donantes,
-  receptores,
-  asignaciones,
+  getDonantes,
+  getDonanteById,
+  getReceptores,
+  getAsignaciones,
   calcularMatching,
   registrarDonante,
   confirmarAsignacion,
